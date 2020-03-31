@@ -1,11 +1,7 @@
-# coding: utf-8
-import sys
-sys.path.append('..')  # 부모 디렉터리의 파일을 가져올 수 있도록 설정
-from common.trainer import Trainer
-from common.optimizer import Adam
+from commons.util import preprocess, create_contexts_target, convert_one_hot
+from commons.optimizer import Adam
+from commons.trainer import Trainer
 from simple_cbow import SimpleCBOW
-from common.util import preprocess, create_contexts_target, convert_one_hot
-
 
 window_size = 1
 hidden_size = 5
@@ -21,10 +17,10 @@ target = convert_one_hot(target, vocab_size)
 contexts = convert_one_hot(contexts, vocab_size)
 
 model = SimpleCBOW(vocab_size, hidden_size)
-optimizer = Adam()
+optimizer = Adam()  # changable optimizer(SGD, AdaGrad etc)
 trainer = Trainer(model, optimizer)
 
-trainer.fit(contexts, target, max_epoch, batch_size)
+trainer.fit(contexts, target, max_epoch, batch_size)  # train model with batch
 trainer.plot()
 
 word_vecs = model.word_vecs
