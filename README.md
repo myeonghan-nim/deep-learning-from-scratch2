@@ -81,3 +81,17 @@
   - 4.4 Left subject of word2vec
 
   - 4.5 Summary
+
+- [chapter05. RNN](https://github.com/Myeonghan-Jeong/deep-learning-from-scratch2/tree/master/chapter05)
+
+  - 5.1 Probability and Language Model
+
+  - 5.2 RNN
+
+  - 5.3 Simulate RNN
+
+  - 5.4 Simulate Time Series Data Processing Layer
+
+  - 5.5 Train and Evaluate RNNLM
+
+  - 5.6 Summary
