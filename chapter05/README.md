@@ -401,3 +401,274 @@
   - 구체적으로는 '데이터 순서대로 제공하기'와 '미니배치별로 데이터 제공하는 시작위치를 옮기기'입니다.
 
   - 이에 대한 설명이 복잡해 잘 이해되지 않을수도 있지만 이어서 소스 코드와 함께 동작을 지켜보면 어렵지 않게 이해할 수 있을 것입니다.
+
+## 5.3 RNN 구현
+
+- 앞 절까지 RNN의 전체 모습을 볼 수 있었습니다. 이제 지금부터 구현해야 할 것은 가로 방향으로 성장한 신경망입니다.
+
+  - 특히 Truncated BPTT 방식의 학습을 따른다면 가로 크기가 일정한 일련의 신경망을 만들면 됩니다.
+
+  <img src="README.assets/fig 5-16.png" alt="fig 5-16" style="zoom:50%;" />
+
+- 이처럼 우리가 다룰 신경망은 길이가 T인 시계열 데이터를 받고 각 시각의 은닉 상태를 T개 출력합니다. 그리고 모듈화를 생각해 옆으로 성장한 신경망을 '하나의 계층'으로 구현하겠습니다.
+
+<img src="README.assets/fig 5-17.png" alt="fig 5-17" style="zoom:50%;" />
+
+- 이처럼 상하 방향의 입력과 출력을 각각 하나로 묶으면 옆으로 늘어선 계층을 하나의 계층으로 간주할 수 있습니다.
+
+  - 즉, 입력을 묶은 xs를입력하면 은닉값을 묶은 hs를 출력하는 단일 계층으로 볼 수 있습니다.
+
+  - 이때 Time RNN 계층 내에서 한 단계의 작업을 수행하는 계층을 'RNN 계층'이라고 하고 T개 단계분의 작업을 한꺼번에 처리하는 계층을 'Time RNN 계층'이라고 합니다.
+
+#### Note
+
+> Time RNN 같이 시계열 데이터를 한꺼번에 처리하는 계층에는 앞에 'Time'을 붙이는 데 이는 이 책의 독자적인 명명규칙입니다.
+>
+> 나중에 Time Affine 계층과 Time Embedding 계층도 구현하는데 이것들도 시계열 데이터를 한꺼번에 처리합니다.
+
+- 앞으로 할 구현의 흐름은 다음과 같습니다.
+
+  1. RNN의 한 단계를 처리하는 클래스를 RNN이라는 이름으로 구현합니다.
+
+  2. RNN 클래스를 이용해 T개 단계의 처리를 한꺼번에 수행하는 계층을 TimeRNN이란 이름으로 완성합니다.
+
+### 5.3.1 RNN 계층 구현
+
+- RNN 처리를 한 단계만 수행하는 RNN 클래스를 구현하겠습니다. 이 때 복습하자면 RNN의 순전파는 다음과 같습니다.
+
+<img src="README.assets/e 5-10.png" alt="e 5-10" style="zoom:50%;" />
+
+- 이 클래스는 데이터를 미니배치로 모아 처리합니다. 따라서 x<sub>t</sub>와 h<sub>t</sub>에서는 각 샘플 데이터를 행 방향에 저장합니다.
+
+- 한편, 행렬을 계산할 때는 행렬의 '형상 확인'이 중요한데 미니배치 크기가 N, 입력 벡터의 차원 수가 D, 은닉 상태 벡터의 차원 수가 H라면 지금 계산에 형상 확인은 다음과 같습니다.
+
+<img src="README.assets/fig 5-18.png" alt="fig 5-18" style="zoom:50%;" />
+
+- 위와 같은 과정을 수행하여 올바로 구현되었는지 확인할 수 있습니다. 그럼 이를 바탕으로 RNN 클래스의 초기화와 순전파 메서드를 구현합니다.
+
+```python
+# chapter05/commons/time_layers.py
+class RNN:
+    def __init__(self, Wx, Wh, b):
+        self.params = [Wx, Wh, b]
+        self.grads = [np.zeros_like(Wx), np.zeros_like(Wh), np.zeros_like(b)]
+        self.cache = None
+
+    def forward(self, x, h_prev):
+        Wx, Wh, b = self.params
+        t = np.matmul(h_prev, Wh) + np.matmul(x, Wx) + b
+        h_next = np.tanh(t)
+
+        self.cache = (x, h_prev, h_next)
+        return h_next
+```
+
+- RNN의 초기화 메서드는 가중치 2개와 편향 1개를 인수로 받습니다.
+
+  - 받은 인수 매개변수는 인스턴스 변수 params에 리스트로 저장합니다.
+
+  - 각 매개변수에 대응하는 형태로 기울기를 초기화한 후 grads에 저장합니다.
+
+  - 마지막으로 역전파 계산 시 사용하는 중간 데이터를 담을 cache를 None으로 초기화합니다.
+
+- 순전파인 forward 메서드는 인수 2개(아래로부터의 입력 x와 왼쪽으로부터의 입력 h_prev)를 받습니다.
+
+  - 그 다음은 forward 계산식을 그대로 계산하는데 여기서 앞 RNN 계층에서 받는 입력이 h_prev, 현 시각 RNN 계층의 출력이 h_next입니다.
+
+- 다음은 RNN의 역전파를 구현할 차례입니다. 그 전에 RNN의 순전파를 계산 그래프로 확인해보겠습니다.
+
+<img src="README.assets/fig 5-19.png" alt="fig 5-19" style="zoom:50%;" />
+
+- RNN 계층의 순전파는 위와 같은 계산 그래프로 나타내는데 여기에는 행렬 곱인 'MatMul'과 '덧셈', 그리고 'tanh'라는 3개의 연산으로 구성됩니다.
+
+  - 참고로 편향 b의 덧셈에서는 브로드캐스트가 일어나기 때문에 정확하게는 Repeat 노드를 이용하지만 여기에선 간략하게 표기했습니다.
+
+- 그럼 이 그래프의 역전파는 앞에서 배웠던 세 가지 연산에 대한 역전파를 사용합니다. 즉, 다음과 같이 순전파와 반대 방향으로 각 연산자의 역전파를 수행합니다.
+
+<img src="README.assets/fig 5-20.png" alt="fig 5-20" style="zoom:50%;" />
+
+- 위 계산 그래프를 구현한 RNN 계층의 backward 메서드의 코드는 다음과 같습니다.
+
+```python
+# class RNN:
+    def backward(self, dh_next):
+        Wx, Wh, b = self.params
+        x, h_prev, h_next = self.cache
+
+        dt = dh_next * (1 - h_next ** 2)
+        db = np.sum(dt, axis=0)
+        dWh = np.matmul(h_prev, dt)
+        dh_prev = np.matmul(dt, Wh.T)
+        dWx = np.matmul(x.T, dt)
+        dx = np.matmul(dt, Wx.T)
+
+        self.grads[0][...] = dWx
+        self.grads[1][...] = dWh
+        self.grads[2][...] = db
+
+        return dx, dh_prev
+```
+
+- 이상이 RNN 계층의 역전파 구현입니다. 이어서 Time RNN 계층을 구현하겠습니다.
+
+### 5.3.2 Time RNN 계층 구현
+
+- Time RNN 계층은 T개의 RNN 계층으로 구성됩니다. 여기서 T는 임의의 수로 설정할 수 있으며 이 계층은 다음과 같습니다.
+
+<img src="README.assets/fig 5-21.png" alt="fig 5-21" style="zoom:50%;" />
+
+- 이처럼 Time RNN 계층은 RNN 계층 T개를 연결한 것으로 이 신경망을 Time RNN 클래스로 구현할 것입니다.
+
+  - 여기에서는 RNN 계층의 은닉 상태 h를 인스턴스 변수로 유지하고 이 변수를 은닉 상태를 '인계'받는 용도로 이용합니다.
+
+  <img src="README.assets/fig 5-22.png" alt="fig 5-22" style="zoom:50%;" />
+
+- 이처럼 RNN 계층의 은닉 상태를 Time RNN 계층에서 관리하기로 합니다.
+
+  - 이렇게 하면 Time RNN 사용자는 RNN 계층 사이에서 은닉 상태를 '인계하는 작업'을 생각하지 않아도 된다는 장점이 생깁니다.
+
+  - 이 책에서는 이 기능을 stateful이라는 변수로 조정할 수 있도록 구현할 것입니다.
+
+- 그럼 Time RNN 계층의 코드를 구현해보겠습니다. 우선 초기화와 또 다른 메서드 2개를 살펴보겠습니다.
+
+```python
+# chapter05/commons/time_layers.py
+class TimeRNN:
+    def __init__(self, Wx, Wh, b, stateful=False):
+        self.params = [Wx, Wh, b]
+        self.grads = [np.zeros_like(Wx), np.zeros_like(Wh), np.zeros_like(b)]
+        self.layers = None
+
+        self.h, self.dh = None, None
+        self.stateful = stateful
+
+    def set_state(self, h):
+        self.h = h
+
+    def reset_state(self):
+        self.h = None
+```
+
+- 초기화 메서드는 가중치와 편향, 그리고 stateful이라는 boolean 값을 인수로 받습니다.
+
+  - 인스턴스 변수 중 layers는 다수의 RNN 계층을 리스트로 저장하는 데 사용됩니다.
+
+  - 인스턴스 변수 h는 forward 메서드를 불렀을 때 마지막 RNN 계층의 은닉 상태를 저장하고, dh는 backward를 불렀을 때 하나 앞 블록의 은닉 상태의 기울기를 저장합니다.
+
+#### Warning
+
+> TimeRNN 클래스는 확장성을 고려해 Time RNN 계층의 은닉 상태를 설정하거나 초기화하는 메서들를 구현했습니다.
+
+- 앞의 인수 중 stateful은 '상태가 있는'이란 뜻의 단어로 이 책에서는 stateful이 True라면 Time RNN 계층은 '상태가 있다'고 합니다.
+
+  - 여기서 '상태가 있다'란, Time RNN 계층이 은닉 상태를 유지한다는 뜻입니다. 즉, 아무리 긴 시계열 데이터라도 Time RNN 계층의 순전파를 끊지 않고 전파합니다.
+
+- 한편 stateful이 False일 때 Time RNN 계층은 은닉 상태를 '영행렬'로 초기화합니다. 이것이 상태가 없는 모드로 '무상태'라고 합니다.
+
+#### Note
+
+> 긴 시계열 데이터를 처리할 때는 RNN의 은닉 상태를 유지해야 합니다.
+>
+> 이처럼 은닉 상태를 유지하는 기능을 흔히 'stateful'이라는 단어로 표현합니다.
+>
+> 많은 딥러닝 프레임워크에서 RNN 계층의 인수로 stateful을 받으며 이를 통해 이전 시각의 은닉 상태를 유지할지 지정할 수 있습니다.
+
+- 그럼 계속해서 순전파를 구현하겠습니다.
+
+```python
+# class TimeRNN:
+    def forward(self, xs):
+        Wx, Wh, b = self.params
+        N, T, D = xs.shape
+        D, H = Wx.shape
+
+        self.layers = []
+        hs = np.empty((N, T, H), dtype='f')
+        if not self.stateful or self.h is None:
+            self.h = np.zeros((N, H), dtype='f')
+
+        for t in range(T):
+            layer = RNN(*self.params)
+            self.h = layer.foward(xs[:, t, :], self.h)
+            hs[:, t, :] = self.h
+            self.layers.append(layer)
+
+        return hs
+```
+
+- 순전파 메서드인 forward(xs)는 아래로부터 xs를 받습니다.
+
+  - xs는 T개 분량의 시계열 데이터를 하나로 모은 것으로 미니배치 크기를 N, 입력 벡터의 차원 수를 D라고 하면 xs의 형상은 (N, T, D)가 됩니다.
+
+- RNN 계층의 은닉 상태 h는 처음 호출 시(self.h가 None일 때)에는 원소가 모두 0인 영행렬로 초기화합니다. 이는 인스턴스 변수 stateful이 False일 때도 항상 영행렬로 초기화합니다.
+
+  - 이어서 `hs = np.empty((N, T, H), dtype='f')`에서 출력값을 담은 hs를 준비합니다.
+
+  - 그 다음 총 T회 반복되는 for 문 안에서 RNN 계층을 생성하여 인스턴스 변수 layers에 추가합니다.
+
+    - 그 사이에 RNN 계층이 각 시각 t의 은닉 상태 h를 계산하고, 이를 hs에 해당 인덱스의 값으로 설정합니다.
+
+#### Note
+
+> Time RNN 계층의 forward 메서드가 불리면 인스턴스 변수 h에는 마지막 RNN 계층의 은닉 상태가 저장됩니다.
+>
+> 그래서 다음번 forward 메서드 호출 시 stateful이 True면 먼저 저장된 h 값이 그대로 이용되고 False면 h가 다시 영행렬로 초기화됩니다.
+
+- 이어서 Time RNN 계층의 역전파를 구현하겠습니다. 이 계산 그래프는 다음과 같습니다.
+
+<img src="README.assets/fig 5-23.png" alt="fig 5-23" style="zoom:50%;" />
+
+- 이와 같이 여기에서는 상츄에서 전해지는 기울기를 dhs로 쓰고 하류로 내보내는 기울기를 dxs로 사용합니다.
+
+  - 여기에서 Truncated BPTT를 수행하기 때문에 이 블록의 이전 시각 역전파는 필요하지 않습니다.
+
+  - 단, 이전 시각의 은닉 상태 기울기는 인스턴스 변수 dh에 저장하겠으며 이는 7장의 seq2seq에서 더 활용하도록 하겠습니다.
+
+- 이상이 Time RNN 계층에서 이뤄지는 역전파의 전체 그림으로 이 때 t번째 RNN 계층에 주목하면 그 역전파는 다음과 같습니다.
+
+<img src="README.assets/fig 5-24.png" alt="fig 5-24" style="zoom:50%;" />
+
+- t번째 RNN 계층에서는 위로부터 기울기 dh<sub>t</sub>와 '한 시각 뒤(미래) 계층'으로부터의 기울기 dh<sub>next</sub>가 전해집니다.
+
+  - 여기에서 주의할 점은 RNN 계층의 순전파에서는 출력이 2개로 분기된다는 것입니다.
+
+  - 이 때 순전파에서 분기한 경우 그 역전파는 기울기가 합산되어 전해져 역전파 시 RNN 계층에는 합산된 기울기가 입력됩니다.
+
+- 이상을 주의하며 역전파를 구현하면 다음과 같습니다.
+
+```python
+# class TimeRNN:
+    def backward(self, dhs):
+        Wx, Wh, b = self.params
+        N, T, H = dhs.shape
+        D, H = Wx.shape
+
+        dxs = np.empty((N, T, D), dtype='f')
+        dh, grads = 0, [0, 0, 0]
+        for t in reversed(range(T)):
+            layer = self.layers[t]
+            dx, dh = layer.backward(dhs[:, t, :] + dh)  # 기울기를 합산합니다.
+            dxs[:, t, :] = dx
+            for i, grad in enumerate(layer.grads):
+                grads[i] += grad
+
+        for i, grad in enumerate(grads):
+            self.grads[i][...] = grad
+        self.dh = dh
+
+        return dxs
+```
+
+- 여기에서도 가장 먼저 하류로 흘려보낼 기울기를 담을 그릇인 dxs를 만듭니다.
+
+  - 그리고 순전파 때와 반대 순서로 RNN 계층의 backward 메서드를 호출하여 각 시각의 기울기 dx를 구해 dxs의 해당 인덱스(시각)에 저장합니다.
+
+  - 그리고 가중치 매개변수에 대해서도 각 RNN 계층의 가중치 기울기를 합산하여 최종 결과를 멤버 변수 self.grads에 덮어씁니다.
+
+#### Warning
+
+> Time RNN 계층 안에는 RNN 계층이 여러 개 있습니다.
+>
+> 그리고 그 RNN 계층들에서 똑같은 가중치를 사용하고 있기에 Time RNN 계층의 최종 가중치의 기울기는 RNN 계층의 가중치 기울기들을 모두 더한 게 됩니다.
+
+- 이상으로 Time RNN 계층의 구현을 살펴봤습니다.
