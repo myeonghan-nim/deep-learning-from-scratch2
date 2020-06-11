@@ -408,3 +408,199 @@ Wh = np.random.randn(H, H) * 0.5
 #### Warning
 
 > LSTM은 Long Short-Term Memory의 약어로 **단기 기억**을 **긴** 시간 지속할 수 있음을 의미합니다.
+
+## 6.3 LSTM 구현
+
+- 그럼 LSTM을 구현해보겠습니다. 우선 최초 한 단계만 처리하는 LSTM 클래스를 구현하고 이어서 T개의 단계를 한 번에 처리하는 Time LSTM 클래스를 구현하겠습니다.
+
+  - LSTM에 수행하는 계산을 정리한 수식들은 다음과 같습니다.
+
+<img src="README.assets/e 6-6.png" alt="e 6-6" style="zoom:50%;" />
+
+<img src="README.assets/e 6-7.png" alt="e 6-7" style="zoom:50%;" />
+
+<img src="README.assets/e 6-8.png" alt="e 6-8" style="zoom:50%;" />
+
+- 위 식들이 LSTM에서 수행하는 계산인데 주목할 부분은 식 6.6에 포함된 **아핀 변환**입니다.
+
+  - 아핀 변환이란 행렬 변환과 평행 이동을 결합한 형태, 즉 식 6.6의 형태를 의미합니다.
+
+- 식 6.6의 네 수식에서는 아핀 변환을 개별적으로 수행하지만 이를 하나의 식으로 정리해 계산할 수 있습니다. 그 과정은 다음과 같습니다.
+
+<img src="README.assets/fig 6-20.png" alt="fig 6-20" style="zoom:50%;" />
+
+- 이처럼 4개의 가중치 혹은 편향을 하나로 모을 수 있고 그 결과 원래 개별적으로 총 4번 수행하던 아핀 변환을 단 1회의 계산으로 끝마칠 수 있습니다.
+
+  - 이 경우 계산 속도가 향상되는데 이는 행렬 라이브러리가 '큰 행렬'을 한 번에 모아 계산할 때가 각각 계산할 때보다 빠르기 때문입니다.
+
+  - 또한, 가중치를 한 데로 모아 관리하므로 소스 코드도 간결해집니다.
+
+- 그러면 **W<sub>x</sub>**, **W<sub>h</sub>**, **b** 각각에 4개분의 가중치 혹은 편향이 포함되어 있다고 가정하고 이 때 LSTM을 계산 그래프로 그려보면 다음과 같습니다.
+
+<img src="README.assets/fig 6-21.png" alt="fig 6-21" style="zoom:50%;" />
+
+- 위 그림과 같이 처음에 4개분의 아핀 변환을 한꺼번에 수행하고 그 결과를 slice 노드를 통해 4개의 결과를 꺼냅니다.
+
+  - slice는 아핀 변환의 결과를 균등하게 네 조각으로 나눠서 꺼내주는 단순한 노드입니다.
+
+  - slice 노드 다음에는 활성화 함수(시그모이드 혹인 tanh 함수)를 거쳐 앞 절에서 설명한 계산을 수행합니다.
+
+- 그럼 이를 참고해서 LSTM 클래스를 구현하겠습니다. 우선 LSTM 클래스의 초기화 코드입니다.
+
+> 전체적인 코드는 chapter06/commons/time_layers.py의 LSTM 클래스를 확인하세요.
+
+```python
+class LSTM:
+    def __init__(self, Wx, Wh, b):
+        self.params = [Wx, Wh, b]
+        self.grads = [np.zeros_like(Wx), np.zeros_like(Wh), np.zeros_like(b)]
+        self.cache = None
+```
+
+- 초기화 인수로 가중치 매개변수 Wx, Wh와 편향 b를 받습니다. 각 인수는 4개분의 가중치가 담겨 있습니다.
+
+  - 이 인수들을 인스턴스 변수 params에 할당하고 이에 대응하는 형태로 기울기도 초기화합니다.
+
+  - 한편 cache는 순전파 때 중간 결과를 보관했다가 역전파 계산에 사용하는 인스턴스 변수입니다.
+
+- 계속해서 순전파 구현을 보겠습니다. 순전파는 forward(x, h_prev, c_prev) 메서드로 구현하며 인수로 현재 시각의 입력 x, 이전 시각의 은닉 상태 h_prev, 이전 시각의 기억 셀 c_prev를 받습니다.
+
+```python
+    def forward(self, x, h_prev, c_prev):
+        Wx, Wh, b = self.params
+        N, H = h_prev.shape
+
+        A = np.matmul(x, Wx) + np.matmul(h_prev, Wh) + b
+
+        # slice를 진행합니다.
+        f, g, i, o = A[:, :H], A[:, H:2 * H], A[:, 2 * H:3 * H], A[:, 3 * H:]
+        f, g, i, o = sigmoid(f), np.tanh(g), sigmoid(i), sigmoid(o)
+
+        c_next = f * c_prev + g * i
+        h_next = o * np.tanh(c_next)
+
+        self.cache = (x, h_prev, c_prev, i, f, g, o, c_next)
+        return h_next, c_next
+```
+
+- 이 메서드에서는 가장 먼저 아핀 변환을 합니다. 이 때 인스턴스 변수 Wx, Wh, b는 각각 4개분의 매개변수가 저장되어 있으므로 행렬의 형상이 다음과 같아집니다.
+
+<img src="README.assets/fig 6-22.png" alt="fig 6-22" style="zoom:50%;" />
+
+- 미니배치 수를 N, 입력 데이터의 차원 수를 D, 기억 셀과 은닉 상태의 차원 수를 H로 표시했을 때 계산 결과인 A에 네 개분의 아핀 변환 결과가 저장됩니다.
+
+  - 따라서 이 결과에서 데이터를 꺼낼 때 H 간격으로 슬라이스해서 꺼내고 이 데이터를 다음 연산 노드에 분배합니다.
+
+  - 나머지 구현도 LSTM의 수식과 계산 그래프를 참고하면 특별히 어려운 부분은 없을 것입니다.
+
+#### Warning
+
+> LSTM 계층은 4개분의 가중치를 하나로 모아서 보관합니다.
+>
+> 그 덕분에 LSTM 계층은 매개변수를 총 3개(Wx, Wh, b)만 관리하면 됩니다.
+>
+> 참고로 RNN 계층도 동일하게 Wx, Wh, b라는 3개의 매개변수만 사용하지만 LSTM과 RNN 계층의 매개변수 형상이 다릅니다.
+
+- LSTM의 역전파는 그림 6-21의 계산 그래프를 역방향으로 전파해 구할 수 있습니다.
+
+  - 지금까지 익힌 지식을 활용하면 어렵지 않겠지만 slice 노드는 처음 등장했으니 그 역전파에 대해 알아볼 필요가 있습니다.
+
+- slice 노드는 행렬을 네 조각으로 나눠서 분배했습니다. 따라서 그 역전파에서는 반대로 4개의 기울기를 결합해야 합니다.
+
+<img src="README.assets/fig 6-23.png" alt="fig 6-23" style="zoom:50%;" />
+
+- 그림 6-23에서 보듯 slice 노드의 역전파에서는 4개의 행렬을 연결합니다. 그림에서는 4개의 기울기(**df, dg, di, do**)를 연결해 **dA**로 만들었습니다.
+
+  - 이를 numpy로 수행하려면 np.hstack() 메서드를 사용하면 됩니다. 이 메서드는 인수로 주어진 배열들을 가로로 연결합니다.(세로로 연결하려면 vstack()을 사용합니다.)
+
+  - 따라서 이 처리는 다음 한 줄로 정리할 수 있습니다.
+
+  ```python
+  dA = np.hstack((df, dg, di, do))
+  ```
+
+- 이상으로 slice 노드의 역전파를 알아봤습니다.
+
+### 6.3.1 Time LSTM 구현
+
+- 계속해서 Time LSTM 구현으로 넘어가겠습니다. Time LSTM은 T개분의 시계열 데이터를 한꺼번에 처리하는 계층입니다. 전체적인 그림은 다음과 같습니다.
+
+<img src="README.assets/fig 6-24.png" alt="fig 6-24" style="zoom:50%;" />
+
+- 그런데 앞서 말한 것처럼 RNN에서는 학습할 때 Truncated BPTT를 수행합니다.
+
+  - Truncated BPTT는 역전파의 연결은 적당한 길이로 끊지만 순전파의 흐름은 그대로 유지합니다.
+
+  - 그러므로 다음 그림처럼 은닉 상태와 기억 셀을 인스턴스 변수로 유지하도록하여 다음번에 forward()가 호출되었을 때 이전 시각의 은닉 상태와 기억 셀에서 시작할 수 있습니다.
+
+<img src="README.assets/fig 6-25.png" alt="fig 6-25" style="zoom:50%;" />
+
+- 이전에 이미 Time RNN 계층을 구현한 것처럼 Time LSTM 계층도 같은 요령으로 구현하면 됩니다.
+
+> 전체 코드는 chapter06/commons/time_layers.py의 TimeLSTM 클래스를 확인하세요.
+
+```python
+class TimeLSTM:
+    def __init__(self, Wx, Wh, b, stateful=False):
+        self.params = [Wx, Wh, b]
+        self.grads = [np.zeros_like(Wx), np.zeros_like(Wh), np.zeros_like(b)]
+        self.layers = None
+        self.h, self.c = None, None
+        self.dh = None
+        self.stateful = stateful
+
+    def forward(self, xs):
+        Wx, Wh, b = self.params
+        N, T, D = xs.shape
+        H = Wh.shape[0]
+
+        self.layers = []
+        hs = np.empty((N, T, H), dtype='f')
+
+        if not self.stateful or self.h is None:
+            self.h = np.zeros_like((N, H), dtype='f')
+        if not self.stateful or self.c is None:
+            self.c = np.zeros_like((N, H), dtype='f')
+
+        for t in range(T):
+            layer = LSTM(*self.params)
+            self.h, self.c = layer.forward(xs[:, t, :], self.h, self.c)
+            hs[:, t, :] = self.h
+            self.layers.append(layer)
+
+        return hs
+
+    def backward(self, dhs):
+        Wx, Wh, b = self.params
+        N, T, H = dhs.shape
+        D = Wx.shape[0]
+
+        dxs = np.empty((N, T, D), dtype='f')
+        dh, dc = 0, 0
+
+        grads = [0, 0, 0]
+        for t in reversed(range(T)):
+            layer = self.layers[t]
+            dx, dh, dc = layer.backward(dhs[:, t, :] + dh, dc)
+            dxs[:, t, :] = dx
+            for i, grad in enumerate(layer.grads):
+                grads[i] += grad
+
+        for i, grad in enumerate(grads):
+          self.grads[i][...] = grad
+
+        self.dh = dh
+        return dxs
+
+    def set_state(self, h, c=None):
+        self.h, self.c = h, c
+
+    def reset_state(self):
+        self.h, self.c = None, None
+```
+
+- LSTM은 은닉 상태 h와 함께 기억 셀 c도 이용하지만, TimeLSTM 클래스의 구현은 Time RNN 클래스와 흡사합니다.
+
+  - 여기에서도 인수 stateful로 상태를 유지할지를 지정합니다.
+
+- 이제 이 TimeLSTM을 이용해서 언어 모델을 만들어보겠습니다.
