@@ -1,19 +1,14 @@
-# coding: utf-8
-import sys
-sys.path.append('..')
-from common import config
-# GPU에서 실행하려면 아래 주석을 해제하세요(CuPy 필요).
-# ==============================================
-# config.GPU = True
-# ==============================================
-from common.optimizer import SGD
-from common.trainer import RnnlmTrainer
-from common.util import eval_perplexity, to_gpu
-from dataset import ptb
-from better_rnnlm import BetterRnnlm
+from commons import config
+from commons.optimizer import SGD
+from commons.trainer import RnnlmTrainer
+from commons.util import eval_perplexity, to_gpu
+from datasets import ptb
+from better_rnnlm import BetterRNNLM
 
+# for use GPU, unlock code below.(CuPy must be installed.)
+config.GPU = True
 
-# 하이퍼파라미터 설정
+# set hyperparameter
 batch_size = 20
 wordvec_size = 650
 hidden_size = 650
@@ -23,7 +18,7 @@ max_epoch = 40
 max_grad = 0.25
 dropout = 0.5
 
-# 학습 데이터 읽기
+# read train dataset
 corpus, word_to_id, id_to_word = ptb.load_data('train')
 corpus_val, _, _ = ptb.load_data('val')
 corpus_test, _, _ = ptb.load_data('test')
@@ -37,7 +32,7 @@ vocab_size = len(word_to_id)
 xs = corpus[:-1]
 ts = corpus[1:]
 
-model = BetterRnnlm(vocab_size, wordvec_size, hidden_size, dropout)
+model = BetterRNNLM(vocab_size, wordvec_size, hidden_size, dropout)
 optimizer = SGD(lr)
 trainer = RnnlmTrainer(model, optimizer)
 
@@ -48,7 +43,7 @@ for epoch in range(max_epoch):
 
     model.reset_state()
     ppl = eval_perplexity(model, corpus_val)
-    print('검증 퍼플렉서티: ', ppl)
+    print('Validation Perplexity:', ppl)
 
     if best_ppl > ppl:
         best_ppl = ppl
@@ -61,7 +56,7 @@ for epoch in range(max_epoch):
     print('-' * 50)
 
 
-# 테스트 데이터로 평가
+# evaluate with test dataset
 model.reset_state()
 ppl_test = eval_perplexity(model, corpus_test)
-print('테스트 퍼플렉서티: ', ppl_test)
+print('Test Perplexity:', ppl_test)
